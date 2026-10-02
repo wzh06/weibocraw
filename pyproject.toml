@@ -1,0 +1,15 @@
+[project]
+name = "weibo-comment-crawler"
+version = "0.1.0"
+description = "Authenticated, resumable Weibo public-page collector"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.48,<2",
+    "PyYAML>=6,<7",
+]
+
+[project.scripts]
+weibo-crawler = "weibo_crawler.cli:main"
+
+[tool.uv]
+package = true

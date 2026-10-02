@@ -1,48 +1,90 @@
-# Weibo keyword collector
+# Weibo comment-participant collector
 
-This is a local Python + Playwright collector for public Weibo keyword search
-results visible to your normal logged-in account. It does **not** bypass
-logins, verification challenges, rate limits, or access controls.
+This is a local Python + Playwright collector for public Weibo pages visible to
+your normal logged-in browser. It does not bypass logins, verification
+challenges, rate limits, or access controls.
 
 ## Setup
 
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
-    playwright install chromium
+    uv sync
+    uv run playwright install chromium
     cp config.example.yaml config.yaml
 
-Edit config.yaml to add real keywords and the inclusive start_date and end_date.
-Keep config.yaml, data/, and .playwright/ private: they are ignored by Git
-because they can contain local collection state and browser data.
+Edit `config.yaml` with the mother-post URLs/IDs and the account profiles.
 
 ## Login and run
 
-    python crawler.py --login
-    python crawler.py --config config.yaml
+    uv run python crawler.py login --config config.yaml --account all
+    uv run python crawler.py crawl --config config.yaml
 
 The login command opens a normal browser window. Complete login yourself, then
-press Enter in the terminal. The run command resumes from its SQLite checkpoint
-and writes all unique records to the configured CSV path.
+press Enter in the terminal. The crawl command resumes from SQLite checkpoints,
+deduplicates users and posts, and stops at 12,000 unique content rows by
+default.
 
-If the requested date range and keywords yield fewer than target_count, the
-script leaves the partial CSV in place and writes a JSON report to data/reports.
-It deliberately does not expand the time range or add queries.
+When an account is rate-limited or shown a verification page, the program saves
+state and asks you to choose another already logged-in account. It never
+attempts to bypass the verification.
 
-## CSV columns
+## Exports
 
-weibo_id, text, author, published_at, url, reposts_count, comments_count,
-likes_count, location, is_original, fetched_at, and keyword.
+- `data/users_basic.csv`: `user_id, gender, birth_date, education,
+  registered_at, posts_count, followers_count`
+- `data/posts_content.csv`: `user_id, text, location, published_at,
+  is_original`
 
-location records only whether Weibo displays an explicit publication location:
-`是` means a location label was detected and `否` means it was not. It does
-not contain the specific place name. is_original is true for a post without a
-forwarded-post block and false for a detected repost; it does not infer text
-ownership or truthfulness.
+## Multiple devices
 
-## Notes
+Use different `device_id` values, local SQLite files, and disjoint mother-post
+lists. Merge after collection:
 
-- Search-page markup can change. If no cards are collected, inspect the current
-  public page structure and update the parsing selectors in parse_cards.
-- Run at a conservative rate and only collect information you are permitted to
-  access and process under Weibo's terms and applicable law.
+    uv run python crawler.py merge-db --output data/merged.sqlite3 \
+      data/state-mac-01.sqlite3 data/state-linux-01.sqlite3
+
+Run at a conservative rate and only collect information you are permitted to
+access and process under Weibo's terms and applicable law.
+
+
+
+- 新增详细的 AGENTS.md
+- 新增 `weibo_crawler/` 模块化架构：
+  - 配置解析
+  - Playwright 登录与账户切换
+  - 母帖评论用户采集
+  - 用户资料解析与筛选
+  - 用户微博采集
+  - SQLite 去重与断点续爬
+  - CSV 导出
+  - 多设备数据库合并
+- 新增 `pyproject.toml`，支持 `uv`
+- 更新 config.example.yaml
+- 更新 README.md
+- `crawler.py` 保留为兼容入口
+- 新增数据库、筛选、解析和合并测试
+
+命令：
+
+```
+uv sync
+uv run playwright install chromium
+
+uv run python crawler.py login --config config.yaml --account all
+uv run python crawler.py crawl --config config.yaml
+uv run python crawler.py export --config config.yaml
+```
+
+多设备合并：
+
+```
+uv run python crawler.py merge-db \
+  --output data/merged.sqlite3 \
+  data/state-mac-01.sqlite3 \
+  data/state-linux-01.sqlite3
+```
+
+验证结果：
+
+- `python3 -m py_compile ...` 通过
+- 7 个单元测试全部通过
+- `git diff --check` 通过
+- 数据库去重、CSV 导出、筛选和数据库合并已完成冒烟测试

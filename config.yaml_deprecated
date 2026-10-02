@@ -1,0 +1,20 @@
+# Copy to config.yaml, then fill in the keywords and desired date range.
+keywords:
+  - ai
+  - 人工智能
+start_date: "2025-01-01"
+end_date: "2026-09-30"
+target_count: 10000
+
+# These paths are local-only and should not be committed when they contain data.
+output_csv: data/weibo_posts.csv
+state_db: data/weibo_state.sqlite3
+profile_dir: .playwright/weibo-profile
+report_dir: data/reports
+
+# Delay between result-page requests. Keep this conservative.
+min_delay_seconds: 0.6
+max_delay_seconds: 3.5
+page_timeout_ms: 30000
+headless: false
+

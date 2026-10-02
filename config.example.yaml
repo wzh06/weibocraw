@@ -1,19 +1,27 @@
-# Copy to config.yaml, then fill in the keywords and desired date range.
-keywords:
-  - 示例关键词
-start_date: "2026-01-01"
-end_date: "2026-09-30"
-target_count: 10000
+device_id: mac-01
+target_content_count: 12000
+state_db: data/state-mac-01.sqlite3
 
-# These paths are local-only and should not be committed when they contain data.
-output_csv: data/weibo_posts.csv
-state_db: data/weibo_state.sqlite3
-profile_dir: .playwright/weibo-profile
-report_dir: data/reports
+output:
+  users_basic_csv: data/users_basic.csv
+  posts_content_csv: data/posts_content.csv
+  report_dir: data/reports
 
-# Delay between result-page requests. Keep this conservative.
-min_delay_seconds: 2.0
-max_delay_seconds: 5.0
-page_timeout_ms: 30000
-headless: false
+parent_posts:
+  - id: "parent-001"
+    url: "https://weibo.com/填写母帖地址"
 
+accounts:
+  - name: account_a
+    profile_dir: .playwright/account-a
+  - name: account_b
+    profile_dir: .playwright/account-b
+
+crawler:
+  min_delay_seconds: 2.0
+  max_delay_seconds: 5.0
+  page_timeout_ms: 30000
+  max_retries: 3
+  max_comment_pages: 0
+  max_post_pages_per_user: 0
+  headless: false
