@@ -76,6 +76,8 @@ def load_settings(path: Path) -> Settings:
     start_date = str(raw.get("start_date", ""))
     end_date = str(raw.get("end_date", ""))
     eligibility_as_of = str(raw.get("eligibility_as_of", "2026-10-01"))
+    max_posts_count_raw = raw.get("max_posts_count")
+    max_posts_count = int(max_posts_count_raw) if max_posts_count_raw is not None else None
     settings = Settings(
         device_id=str(raw.get("device_id", "local")),
         target_content_count=target,
@@ -96,6 +98,7 @@ def load_settings(path: Path) -> Settings:
         page_timeout_ms=options.page_timeout_ms,
         headless=options.headless,
         eligibility_as_of=eligibility_as_of,
+        max_posts_count=max_posts_count,
     )
     validate_config(settings)
     return settings
@@ -106,6 +109,8 @@ def validate_config(settings: Settings) -> None:
         raise ConfigurationError("device_id must not be empty")
     if settings.target_content_count < 1:
         raise ConfigurationError("target_content_count must be at least 1")
+    if settings.max_posts_count is not None and settings.max_posts_count < 0:
+        raise ConfigurationError("max_posts_count must be at least 0")
     if settings.crawler.min_delay_seconds < 0 or settings.crawler.max_delay_seconds < settings.crawler.min_delay_seconds:
         raise ConfigurationError("delay settings must satisfy 0 <= min <= max")
     if len({x.parent_id for x in settings.parent_posts}) != len(settings.parent_posts):

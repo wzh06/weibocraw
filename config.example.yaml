@@ -1,6 +1,8 @@
 device_id: mac-01
 target_content_count: 12000
 state_db: data/state-mac-01.sqlite3
+eligibility_as_of: "2026-10-01"
+max_posts_count: 20000
 
 output:
   users_basic_csv: data/users_basic.csv

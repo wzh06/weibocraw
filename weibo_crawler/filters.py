@@ -22,9 +22,15 @@ def is_registered_at_least_one_year(registered_at: str, today: date | None = Non
     return value is not None and value <= (today or date.today()) - timedelta(days=365)
 
 
-def is_eligible_user(user: UserRecord, today: date | None = None) -> bool:
+def is_eligible_user(
+    user: UserRecord,
+    today: date | None = None,
+    *,
+    max_posts_count: int | None = None,
+) -> bool:
     return (
         is_registered_at_least_one_year(user.registered_at, today)
         and user.posts_count is not None and user.posts_count >= 50
+        and (max_posts_count is None or max_posts_count <= 0 or user.posts_count <= max_posts_count)
         and user.followers_count is not None and user.followers_count <= 5000
     )

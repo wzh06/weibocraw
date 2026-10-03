@@ -118,7 +118,7 @@ async def collect_user_profile(page: Any, user_id: str, state: StateStore, setti
     await _settle_profile_page(page)
     profile = await parse_user_profile(page, user_id, user.profile_url)
     eligibility_date = parse_date(settings.eligibility_as_of) or datetime.now(UTC).date()
-    eligible = is_eligible_user(profile, eligibility_date)
+    eligible = is_eligible_user(profile, eligibility_date, max_posts_count=settings.max_posts_count)
     logging.debug(
         "profile parsed user=%s url=%s title=%r registered_at=%r posts_count=%r followers_count=%r eligible=%s",
         user_id,

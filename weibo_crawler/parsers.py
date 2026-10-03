@@ -25,6 +25,27 @@ def normalize_count(value: str) -> int | None:
     return int(float(match.group(1)) * {"万": 10_000, "亿": 100_000_000}.get(match.group(2), 1))
 
 
+def extract_labeled_count(source_text: str, label: str) -> int | None:
+    """Extract a count adjacent to a Chinese label such as ``粉丝``.
+
+    Weibo currently renders profile counters in the form ``308粉丝`` (number
+    attached directly before label).  Try the unambiguous attached forms first,
+    then the older ``粉丝 308`` form.
+    """
+    text = clean_text(source_text)
+    escaped_label = re.escape(label)
+    attached_before = re.search(rf"([\d.]+(?:万|亿)?){escaped_label}", text)
+    if attached_before:
+        return normalize_count(attached_before.group(1))
+    attached_after = re.search(rf"{escaped_label}([\d.]+(?:万|亿)?)", text)
+    if attached_after:
+        return normalize_count(attached_after.group(1))
+    spaced_after = re.search(rf"{escaped_label}\s*[：:]?\s*([\d.]+(?:万|亿)?)", text)
+    if spaced_after:
+        return normalize_count(spaced_after.group(1))
+    return None
+
+
 def extract_location(source_text: str) -> str:
     cleaned = clean_text(source_text)
     for pattern in (r"(?:发布于|位置[：:]?|定位于)\s*([^\s|·]+)", r"\[([^\]]{1,40})\]$"):
@@ -168,21 +189,21 @@ async def parse_user_profile(page: Any, user_id: str, profile_url: str) -> UserR
             posts = int(info_user["statuses_count"])
         if info_user.get("followers_count") is not None:
             followers = int(info_user["followers_count"])
+        elif info_user.get("followers_count_str") is not None:
+            followers = normalize_count(str(info_user["followers_count_str"]))
         registered_at = str(detail.get("created_at") or "")
     except Exception:
         # The visible page and serialized markup remain valid fallbacks if the
         # profile detail request is unavailable for a particular account.
         pass
-    post_match = re.search(r"(?:全部微博|微博)\s*[（(]?\s*([\d.]+(?:万|亿)?)", text)
-    if not post_match:
-        post_match = re.search(r"([\d.]+(?:万|亿)?)\s*微博", text)
-    follower_match = re.search(r"粉丝\s*[：:]?\s*([\d.]+(?:万|亿)?)", text)
-    if not follower_match:
-        follower_match = re.search(r"([\d.]+(?:万|亿)?)\s*粉丝", text)
-    if post_match:
-        posts = normalize_count(post_match.group(1))
-    if follower_match:
-        followers = normalize_count(follower_match.group(1))
+    if posts is None:
+        post_match = re.search(r"(?:全部微博|微博)\s*[（(]?\s*([\d.]+(?:万|亿)?)", text)
+        if not post_match:
+            post_match = re.search(r"([\d.]+(?:万|亿)?)\s*微博", text)
+        if post_match:
+            posts = normalize_count(post_match.group(1))
+    if followers is None:
+        followers = extract_labeled_count(text, "粉丝")
     # The current Weibo profile renders these public counters in the page's
     # serialized user object rather than in visible text.
     if posts is None:

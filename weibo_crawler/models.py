@@ -102,6 +102,8 @@ class Settings:
     headless: bool = False
     # Eligibility is evaluated against this date so reruns are reproducible.
     eligibility_as_of: str = "2026-10-01"
+    # Optional upper bound on a user's total posts. ``None`` disables it.
+    max_posts_count: int | None = None
 
 
 @dataclass

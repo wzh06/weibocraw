@@ -26,6 +26,7 @@
 
 - 注册时间满一年；
 - 微博总数至少 50 条；
+- 微博总数不超过配置的 `max_posts_count`（如果启用）；
 - 粉丝数量不超过 5000。
 
 注册满一年的判断基准日期由配置项 `eligibility_as_of` 控制，默认值为 `2026-10-01`。如果你需要按今天计算，可将其改为运行日期，但要注意这会降低多次运行的筛选结果可复现性。
@@ -303,6 +304,7 @@ device_id: mac-01
 target_content_count: 12000
 state_db: data/state-mac-01.sqlite3
 eligibility_as_of: "2026-10-01"
+max_posts_count: 20000
 
 output:
   users_basic_csv: data/users_basic.csv
@@ -363,6 +365,14 @@ state_db: data/state-mac-01.sqlite3
 
 ```yaml
 eligibility_as_of: "2026-10-01"
+```
+
+#### `max_posts_count`
+
+用户发帖总数的上限。发帖总数大于该值的用户会被判定为不合格并舍弃。省略或设为 `0` 表示不启用该上限。
+
+```yaml
+max_posts_count: 20000
 ```
 
 #### `output`
@@ -613,6 +623,7 @@ uv run playwright install --with-deps chromium
 
 - 评论用户注册未满一年；
 - 微博总数少于 50；
+- 微博总数超过 `max_posts_count`（如果启用）；
 - 粉丝数超过 5000；
 - 页面结构变化导致注册时间、微博数或粉丝数没有解析成功。
 
