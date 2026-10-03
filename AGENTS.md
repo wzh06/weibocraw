@@ -1,47 +1,23 @@
-# AGENTS.md
+# Repository Guidelines
 
-## Project purpose
+## Project Structure
 
-This repository contains a local, authenticated Weibo collector. It is intended
-to read public pages available to the user's normal logged-in browser session,
-collect comment participants from configured parent posts, and then collect
-those participants' public profile and post data.
+This is a Python 3.11+ Weibo collector using Playwright. `crawler.py` is the
+backward-compatible executable entry point; the implementation lives in
+`weibo_crawler/`:
 
-## Operating boundaries
+- `config.py` loads YAML settings and `models.py` defines records.
+- `browser.py` manages persistent browser profiles and user login.
+- `parsers.py` and `selectors.py` isolate page extraction and Weibo selectors.
+- `crawler.py` coordinates collection queues; `database.py` stores checkpoints
+  and deduplicated records; `filters.py` applies eligibility rules.
+- `exporter.py` writes CSV/report output and `merge.py` combines device databases.
+- `tests/` contains unit tests for parsing, filtering, database, and checkpoint behavior.
 
-- Do not bypass login, CAPTCHA, access controls, privacy settings, or rate
-  limits.
-- The user completes login in the visible browser and presses Enter in the
-  terminal before collection starts.
-- Stop and persist state when Weibo shows a verification, login, or rate-limit
-  page. The next run must resume from the SQLite checkpoints.
-- Collect only fields configured by the user and only from pages the account is
-  allowed to view. Do not infer sensitive attributes that are not displayed.
-- Keep `config.yaml`, browser profiles, SQLite databases, and generated exports
-  under ignored local paths.
+Keep `config.yaml`, browser profiles, SQLite state, exports, and other local
+runtime data under ignored paths. Use `config.example.yaml` as the template.
 
-## Architecture
-
-- `crawler.py` is a compatibility executable entry point. The implementation is
-  organized under `weibo_crawler/`: `config.py` parses YAML, `models.py` holds
-  records, `browser.py` owns Playwright profiles/login, `parsers.py` extracts
-  page fields, `database.py` owns SQLite state, `filters.py` applies eligibility
-  rules, `crawler.py` orchestrates the queues, `exporter.py` writes CSV/report
-  files, and `merge.py` combines device databases.
-- SQLite is the source of truth. Inserts are idempotent and all work queues
-  have checkpoints so an interrupted run can continue.
-- Parent posts are configured as work items. Multiple machines may use the same
-  database on a shared filesystem, or separate databases with disjoint parent
-  post assignments; use a unique `device_id` for each worker.
-- Accounts are configured as named persistent Playwright profiles. A worker
-  rotates to the next account after a manual-stop condition and resumes from
-  the saved queue position.
-- `data/users_basic.csv` and `data/posts_content.csv` are the two stable export
-  templates requested by the project.
-
-## Development commands
-
-Use `uv` for dependency and environment management:
+## Development Commands
 
 ```bash
 uv sync
@@ -49,18 +25,33 @@ uv run playwright install chromium
 uv run python crawler.py login --config config.yaml --account all
 uv run python crawler.py crawl --config config.yaml
 uv run python crawler.py export --config config.yaml
-uv run python crawler.py merge-db --output data/merged.sqlite3 data/state-mac.sqlite3 data/state-linux.sqlite3
 uv run python -m unittest discover -s tests -v
+python3 -m py_compile crawler.py
 ```
 
-Do not commit local data, browser profiles, or `config.yaml`.
+Use `merge-db` to combine separate worker databases, for example:
+`uv run python crawler.py merge-db --output data/merged.sqlite3 data/state-a.sqlite3 data/state-b.sqlite3`.
 
-## Change checklist
+## Coding and Testing Conventions
 
-1. Preserve resumability and deduplication when changing schemas or parsers.
-2. Add or update focused tests for pure parsing, filtering, and checkpoint
-   behavior.
-3. Run the unit test suite and `python -m py_compile crawler.py` before
-   delivering changes.
-4. Keep selectors and URL patterns isolated so Weibo markup changes are easy to
-   update.
+Use four-space indentation, type hints, and focused functions. Name modules and
+functions in `snake_case`, classes in `PascalCase`, and constants in
+`UPPER_SNAKE_CASE`. Keep selectors and URL patterns centralized so markup
+changes do not spread through the crawler. Add focused `unittest` cases for
+pure parsing, filtering, deduplication, and resumability; test methods should
+be named `test_<behavior>`.
+
+## Commits and Pull Requests
+
+Use short, action-oriented commit subjects consistent with the existing history
+(for example, `add linux support`). Pull requests should describe the behavior
+change, affected commands or data formats, and validation performed. Include
+tests for parser or schema changes and call out any migration or configuration
+impact.
+
+## Safety and Configuration
+
+Only collect public fields visible to the authenticated account. Never bypass
+login, CAPTCHA, access controls, privacy settings, or rate limits. If Weibo
+shows verification, login, or rate limiting, stop and preserve SQLite state so
+the next run can resume safely.

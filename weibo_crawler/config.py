@@ -75,6 +75,7 @@ def load_settings(path: Path) -> Settings:
     target = int(raw.get("target_content_count", raw.get("target_count", 12000)))
     start_date = str(raw.get("start_date", ""))
     end_date = str(raw.get("end_date", ""))
+    eligibility_as_of = str(raw.get("eligibility_as_of", "2026-10-01"))
     settings = Settings(
         device_id=str(raw.get("device_id", "local")),
         target_content_count=target,
@@ -94,6 +95,7 @@ def load_settings(path: Path) -> Settings:
         max_delay_seconds=maximum,
         page_timeout_ms=options.page_timeout_ms,
         headless=options.headless,
+        eligibility_as_of=eligibility_as_of,
     )
     validate_config(settings)
     return settings

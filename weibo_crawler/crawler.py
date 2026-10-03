@@ -10,15 +10,34 @@ from .browser import detect_block_page, launch_account_context, open_account_pag
 from .database import StateStore
 from .errors import CrawlStopped
 from .exporter import write_exports, write_report
-from .filters import is_eligible_user
+from .filters import is_eligible_user, parse_date
 from .models import AccountConfig, CrawlReport, ParentPostConfig, Settings
-from .parsers import parse_commenters, parse_post_cards, parse_user_profile
+from .parsers import parse_api_posts, parse_commenters, parse_post_cards, parse_user_profile
+from .selectors import COMMENT_USER_FALLBACK_SELECTORS, PROFILE_POSTS_ENDPOINT
 
 try:
-    from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
+    from playwright.async_api import (
+        Error as PlaywrightError,
+        TimeoutError as PlaywrightTimeoutError,
+        async_playwright,
+    )
 except ModuleNotFoundError:  # pragma: no cover
     PlaywrightTimeoutError = TimeoutError
+    PlaywrightError = Exception
     async_playwright = None
+
+
+async def _close_context(context: Any) -> None:
+    """Close a context without masking an earlier browser/page failure."""
+    if context is None:
+        return
+    try:
+        await context.close()
+    except PlaywrightError:
+        # The browser may already have closed itself (for example after the
+        # user closes the visible window).  Keep the original crawl error and
+        # let the caller persist its checkpoint/report normally.
+        logging.debug("browser context was already closed")
 
 
 async def _next_page(page: Any) -> bool:
@@ -40,10 +59,36 @@ async def _advance_to_page(page: Any, target_page: int) -> None:
             break
 
 
+async def _settle_dynamic_page(page: Any, minimum_links: int = 2) -> None:
+    """Allow Weibo's client-rendered comments/profile content to appear."""
+    try:
+        await page.wait_for_function(
+            "([selector, minimum]) => document.querySelectorAll(selector).length >= minimum",
+            [COMMENT_USER_FALLBACK_SELECTORS, minimum_links],
+            timeout=5000,
+        )
+    except Exception:
+        # A post can legitimately have fewer than ``minimum_links`` visible
+        # users. Keep a short settle delay before parsing that page anyway.
+        await page.wait_for_timeout(1500)
+
+
+async def _settle_profile_page(page: Any) -> None:
+    """Wait until the client-rendered profile replaces the loading shell."""
+    try:
+        await page.wait_for_function(
+            "() => /全部微博\\s*[（(]\\s*\\d+/.test(document.body?.innerText || '') || /粉丝/.test(document.body?.innerText || '')",
+            timeout=5000,
+        )
+    except Exception:
+        await page.wait_for_timeout(1500)
+
+
 async def collect_parent_commenters(page: Any, parent: ParentPostConfig, state: StateStore, settings: Settings) -> int:
     checkpoint = state.get_parent_checkpoint(parent.parent_id)
     await page.goto(parent.url, wait_until="domcontentloaded", timeout=settings.crawler.page_timeout_ms)
     await detect_block_page(page)
+    await _settle_dynamic_page(page)
     page_number = checkpoint.page_number
     await _advance_to_page(page, page_number)
     total_new = 0
@@ -70,8 +115,20 @@ async def collect_user_profile(page: Any, user_id: str, state: StateStore, setti
         return False
     await page.goto(user.profile_url, wait_until="domcontentloaded", timeout=settings.crawler.page_timeout_ms)
     await detect_block_page(page)
+    await _settle_profile_page(page)
     profile = await parse_user_profile(page, user_id, user.profile_url)
-    eligible = is_eligible_user(profile)
+    eligibility_date = parse_date(settings.eligibility_as_of) or datetime.now(UTC).date()
+    eligible = is_eligible_user(profile, eligibility_date)
+    logging.debug(
+        "profile parsed user=%s url=%s title=%r registered_at=%r posts_count=%r followers_count=%r eligible=%s",
+        user_id,
+        page.url,
+        await page.title(),
+        profile.registered_at,
+        profile.posts_count,
+        profile.followers_count,
+        eligible,
+    )
     state.upsert_user(profile.__class__(**{**profile.__dict__, "profile_status": "success" if eligible else "excluded"}))
     return eligible
 
@@ -80,19 +137,33 @@ async def collect_user_posts(page: Any, user: Any, state: StateStore, settings: 
     checkpoint = state.get_post_checkpoint(user.user_id)
     await page.goto(user.profile_url, wait_until="domcontentloaded", timeout=settings.crawler.page_timeout_ms)
     await detect_block_page(page)
+    await _settle_profile_page(page)
     page_number = checkpoint.page_number
-    await _advance_to_page(page, page_number)
     inserted = 0
     seen_pages = 0
     while state.count_posts() < settings.target_content_count:
-        posts = await parse_post_cards(page, user.user_id)
+        endpoint = PROFILE_POSTS_ENDPOINT.format(user_id=user.user_id, page_number=page_number)
+        posts = []
+        try:
+            payload = await page.evaluate(
+                """async (endpoint) => {
+                    const response = await fetch(endpoint, {credentials: 'include'});
+                    return response.ok ? await response.json() : {};
+                }""",
+                endpoint,
+            )
+            posts = parse_api_posts(payload, user.user_id)
+        except Exception:
+            logging.debug("profile feed API unavailable for user=%s page=%s", user.user_id, page_number)
+        if not posts:
+            posts = await parse_post_cards(page, user.user_id)
         for post in posts:
             inserted += int(state.upsert_post(post))
         seen_pages += 1
         state.set_post_checkpoint(user.user_id, page_number + 1)
-        if settings.crawler.max_post_pages_per_user and seen_pages >= settings.crawler.max_post_pages_per_user:
+        if not posts:
             break
-        if not await _next_page(page):
+        if settings.crawler.max_post_pages_per_user and seen_pages >= settings.crawler.max_post_pages_per_user:
             break
         page_number += 1
         await asyncio.sleep(random.uniform(settings.crawler.min_delay_seconds, settings.crawler.max_delay_seconds))
@@ -130,13 +201,18 @@ async def crawl_device(settings: Settings) -> CrawlReport:
                         if state.count_posts() >= settings.target_content_count:
                             break
                         await collect_user_posts(page, user, state, settings)
-                    report.reason = "target_reached" if state.count_posts() >= settings.target_content_count else "all_parent_posts_exhausted"
+                    if state.count_posts() >= settings.target_content_count:
+                        report.reason = "target_reached"
+                    elif not state.get_eligible_users():
+                        report.reason = "no_eligible_users"
+                    else:
+                        report.reason = "all_parent_posts_exhausted"
                     break
                 except CrawlStopped as exc:
                     state.log_account_event(account.name, "blocked", str(exc))
                     print(f"账户 {account.name} 触发登录/验证/频控：{exc}")
                     if context:
-                        await context.close()
+                        await _close_context(context)
                     context = None
                     choice = input("输入下一个账户编号继续，输入 q 停止：").strip()
                     if choice.lower() == "q":
@@ -162,7 +238,7 @@ async def crawl_device(settings: Settings) -> CrawlReport:
         report.reason = "unexpected_error"
     finally:
         if context:
-            await context.close()
+            await _close_context(context)
         report.actual_content_count = state.count_posts()
         report.discovered_users = state.count_users()
         report.eligible_users = len(state.get_eligible_users())

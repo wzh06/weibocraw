@@ -1,0 +1,2 @@
+playwright<2,>=1.48
+PyYAML<7,>=6

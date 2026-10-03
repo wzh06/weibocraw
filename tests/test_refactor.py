@@ -6,7 +6,7 @@ import unittest
 from weibo_crawler.database import StateStore
 from weibo_crawler.filters import is_eligible_user, parse_date
 from weibo_crawler.models import CommenterRef, PostRecord, UserRecord
-from weibo_crawler.parsers import extract_post_id, extract_user_id, extract_location
+from weibo_crawler.parsers import extract_post_id, extract_user_id, extract_location, parse_api_posts
 
 
 class RefactorPureTests(unittest.TestCase):
@@ -39,9 +39,24 @@ class RefactorPureTests(unittest.TestCase):
             posts_csv = Path(directory) / "posts.csv"
             db.export_users_basic_csv(users_csv)
             db.export_posts_content_csv(posts_csv)
-            self.assertIn("user_id", users_csv.read_text(encoding="utf-8-sig"))
+            self.assertIn("用户ID", users_csv.read_text(encoding="utf-8-sig"))
             self.assertIn("是", posts_csv.read_text(encoding="utf-8-sig"))
             db.close()
+
+    def test_parse_api_posts(self) -> None:
+        payload = {
+            "data": {
+                "list": [
+                    {"idstr": "123456", "mblogid": "AbCd", "text_raw": "正文", "created_at": "2026-10-01", "region_name": "发布于 上海"},
+                    {"idstr": "123457", "text_raw": "转发", "retweeted_status": {}, "created_at": "2026-10-02"},
+                ]
+            }
+        }
+        posts = parse_api_posts(payload, "42")
+        self.assertEqual(len(posts), 2)
+        self.assertTrue(posts[0].is_original)
+        self.assertFalse(posts[1].is_original)
+        self.assertEqual(posts[0].location, "上海")
 
 
 if __name__ == "__main__":

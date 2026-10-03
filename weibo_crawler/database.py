@@ -202,8 +202,19 @@ class StateStore:
 
     def export_users_basic_csv(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fields = ["user_id", "gender", "birth_date", "education", "registered_at", "posts_count", "followers_count"]
-        rows = self.conn.execute("SELECT user_id,gender,birth_date,education,registered_at,posts_count,followers_count FROM users WHERE profile_status='success' ORDER BY user_id")
+        fields = ["用户ID", "性别", "出生日期", "教育信息", "注册时间", "微博总数", "粉丝数量"]
+        rows = self.conn.execute(
+            """SELECT user_id AS "用户ID",
+                      gender AS "性别",
+                      birth_date AS "出生日期",
+                      education AS "教育信息",
+                      registered_at AS "注册时间",
+                      posts_count AS "微博总数",
+                      followers_count AS "粉丝数量"
+               FROM users
+               WHERE profile_status='success'
+               ORDER BY user_id"""
+        )
         with path.open("w", newline="", encoding="utf-8-sig") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
@@ -211,12 +222,20 @@ class StateStore:
 
     def export_posts_content_csv(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fields = ["user_id", "text", "location", "published_at", "is_original"]
-        rows = self.conn.execute("SELECT user_id,text,location,published_at,is_original FROM posts ORDER BY user_id,published_at,post_id")
+        fields = ["用户ID", "正文", "位置", "日期", "是否原创"]
+        rows = self.conn.execute(
+            """SELECT user_id AS "用户ID",
+                      text AS "正文",
+                      location AS "位置",
+                      published_at AS "日期",
+                      is_original AS "是否原创"
+               FROM posts
+               ORDER BY user_id,published_at,post_id"""
+        )
         with path.open("w", newline="", encoding="utf-8-sig") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             for row in rows:
                 value = dict(row)
-                value["is_original"] = "是" if value["is_original"] == 1 else "否" if value["is_original"] == 0 else ""
+                value["是否原创"] = "是" if value["是否原创"] == 1 else "否" if value["是否原创"] == 0 else ""
                 writer.writerow(value)

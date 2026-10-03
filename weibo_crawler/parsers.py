@@ -39,8 +39,14 @@ def extract_user_id(url: str) -> str | None:
     query_id = parse_qs(parsed.query).get("uid", [None])[0]
     if query_id:
         return str(query_id)
-    match = re.search(r"/(?:u|profile)/([A-Za-z0-9_-]+)", parsed.path)
-    return match.group(1) if match else None
+    match = re.search(r"/(?:u|profile)/([A-Za-z0-9_-]+)(?:/|$)", parsed.path)
+    if not match:
+        return None
+    candidate = match.group(1)
+    # Navigation links such as /u/page/follow/... are not user profiles.
+    if candidate.lower() in {"page", "home", "follow", "fans", "friends"}:
+        return None
+    return candidate
 
 
 def extract_post_id(url: str = "", element: Any | None = None) -> str | None:
@@ -59,6 +65,30 @@ def extract_post_id(url: str = "", element: Any | None = None) -> str | None:
                 return str(value)
     match = re.search(r"/(?:detail|status)/([A-Za-z0-9]+)", parsed.path)
     return match.group(1) if match else None
+
+
+def parse_api_posts(payload: dict[str, Any], user_id: str, source_parent_id: str = "") -> list[PostRecord]:
+    """Parse the public profile feed returned by Weibo's page data endpoint."""
+    result: list[PostRecord] = []
+    for item in ((payload.get("data") or {}).get("list") or []):
+        post_id = str(item.get("idstr") or item.get("mid") or item.get("id") or "")
+        text = clean_text(str(item.get("text_raw") or item.get("text") or ""))
+        if not post_id or not text:
+            continue
+        mblog_id = str(item.get("mblogid") or post_id)
+        source = clean_text(str(item.get("region_name") or item.get("source") or ""))
+        result.append(PostRecord(
+            post_id=post_id,
+            user_id=user_id,
+            text=text,
+            location=extract_location(source),
+            published_at=str(item.get("created_at") or ""),
+            is_original="retweeted_status" not in item,
+            url=f"https://weibo.com/{user_id}/{mblog_id}",
+            fetched_at=utc_now(),
+            source_parent_id=source_parent_id,
+        ))
+    return result
 
 
 def extract_gender(profile_text: str) -> str:
@@ -111,22 +141,68 @@ async def parse_commenters(page: Any, parent_id: str) -> list[CommenterRef]:
 
 async def parse_user_profile(page: Any, user_id: str, profile_url: str) -> UserRecord:
     text = await _inner_text(page.locator("body"))
+    try:
+        markup = await page.content()
+    except Exception:
+        markup = ""
     posts = None
     followers = None
-    post_match = re.search(r"微博\s*([\d.]+(?:万|亿)?)", text)
-    follower_match = re.search(r"粉丝\s*([\d.]+(?:万|亿)?)", text)
+    registered_at = ""
+    try:
+        profile_data = await page.evaluate(
+            """async (uid) => {
+                const [infoResponse, detailResponse] = await Promise.all([
+                    fetch(`/ajax/profile/info?uid=${encodeURIComponent(uid)}&scene=profile`, {credentials: 'include'}),
+                    fetch(`/ajax/profile/detail?uid=${encodeURIComponent(uid)}`, {credentials: 'include'})
+                ]);
+                return {
+                    info: infoResponse.ok ? await infoResponse.json() : null,
+                    detail: detailResponse.ok ? await detailResponse.json() : null
+                };
+            }""",
+            user_id,
+        )
+        info_user = ((profile_data or {}).get("info") or {}).get("data", {}).get("user", {})
+        detail = ((profile_data or {}).get("detail") or {}).get("data", {})
+        if info_user.get("statuses_count") is not None:
+            posts = int(info_user["statuses_count"])
+        if info_user.get("followers_count") is not None:
+            followers = int(info_user["followers_count"])
+        registered_at = str(detail.get("created_at") or "")
+    except Exception:
+        # The visible page and serialized markup remain valid fallbacks if the
+        # profile detail request is unavailable for a particular account.
+        pass
+    post_match = re.search(r"(?:全部微博|微博)\s*[（(]?\s*([\d.]+(?:万|亿)?)", text)
+    if not post_match:
+        post_match = re.search(r"([\d.]+(?:万|亿)?)\s*微博", text)
+    follower_match = re.search(r"粉丝\s*[：:]?\s*([\d.]+(?:万|亿)?)", text)
+    if not follower_match:
+        follower_match = re.search(r"([\d.]+(?:万|亿)?)\s*粉丝", text)
     if post_match:
         posts = normalize_count(post_match.group(1))
     if follower_match:
         followers = normalize_count(follower_match.group(1))
+    # The current Weibo profile renders these public counters in the page's
+    # serialized user object rather than in visible text.
+    if posts is None:
+        match = re.search(r'"statuses_count"\s*:\s*(\d+)', markup)
+        if match:
+            posts = int(match.group(1))
+    if followers is None:
+        match = re.search(r'"followers_count"\s*:\s*(\d+)', markup)
+        if match:
+            followers = int(match.group(1))
     education_match = re.search(r"(?:大学|教育|学校)\s*[：:]?\s*([^\n|]{1,80})", text)
+    if not registered_at:
+        registered_at = extract_registered_at(text)
     return UserRecord(
         user_id=user_id,
         profile_url=profile_url,
         gender=extract_gender(text),
         birth_date=extract_birth_date(text),
         education=clean_text(education_match.group(1)) if education_match else "",
-        registered_at=extract_registered_at(text),
+        registered_at=registered_at,
         posts_count=posts,
         followers_count=followers,
         profile_fetched_at=utc_now(),

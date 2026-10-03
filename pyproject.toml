@@ -11,5 +11,8 @@ dependencies = [
 [project.scripts]
 weibo-crawler = "weibo_crawler.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["weibo_crawler*"]
+
 [tool.uv]
 package = true

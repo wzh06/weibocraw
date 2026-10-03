@@ -100,6 +100,8 @@ class Settings:
     max_delay_seconds: float = 5.0
     page_timeout_ms: int = 30000
     headless: bool = False
+    # Eligibility is evaluated against this date so reruns are reproducible.
+    eligibility_as_of: str = "2026-10-01"
 
 
 @dataclass

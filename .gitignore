@@ -4,3 +4,5 @@ __pycache__/
 .playwright/
 data/
 config.yaml
+.DS_Store
+模版.md

@@ -46,10 +46,11 @@ async def login_account(playwright: Any, account: AccountConfig, settings: Setti
 
 async def detect_block_page(page: Page) -> None:
     try:
+        current_url = (page.url or "").lower()
         title = (await page.title()).lower()
         body = (await page.locator("body").inner_text(timeout=3000)).lower()
     except PlaywrightTimeoutError:
         return
     indicators = ("验证码", "安全验证", "访问频繁", "账号异常", "login.php")
-    if any(item in title or item in body for item in indicators):
+    if "login.php" in current_url or any(item in title or item in body for item in indicators):
         raise CrawlStopped("页面要求登录、验证或降低访问频率")

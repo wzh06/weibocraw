@@ -6,4 +6,5 @@ COMMENT_NEXT_SELECTORS = "a.next, a:has-text('下一页'), a:has-text('查看更
 POST_CARD_SELECTORS = "div.card-wrap[mid], div.card-wrap[action-type='feed_list_item'], article"
 PROFILE_FIELD_SELECTORS = ("body",)
 NEXT_PAGE_SELECTORS = COMMENT_NEXT_SELECTORS
+PROFILE_POSTS_ENDPOINT = "/ajax/statuses/mymblog?uid={user_id}&page={page_number}&feature=0"
 BLOCK_PAGE_INDICATORS = ("验证码", "安全验证", "访问频繁", "账号异常", "login.php")
