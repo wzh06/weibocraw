@@ -1,12 +1,25 @@
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import asyncio
 import unittest
 
 from weibo_crawler.database import StateStore
 from weibo_crawler.filters import is_eligible_user, parse_date
 from weibo_crawler.models import CommenterRef, PostRecord, UserRecord
-from weibo_crawler.parsers import extract_post_id, extract_user_id, extract_labeled_count, extract_location, parse_api_posts
+from weibo_crawler.parsers import (
+    comment_payload_max_id,
+    extract_labeled_count,
+    extract_location,
+    extract_mblog_id,
+    extract_post_id,
+    extract_post_owner_id,
+    extract_user_id,
+    mblogid_to_numeric,
+    parse_api_posts,
+    parse_comment_payload,
+    parse_user_profile,
+)
 
 
 class RefactorPureTests(unittest.TestCase):
@@ -37,6 +50,21 @@ class RefactorPureTests(unittest.TestCase):
         self.assertFalse(is_eligible_user(user, date(2026, 1, 3), max_posts_count=4999))
         self.assertTrue(is_eligible_user(user, date(2026, 1, 3), max_posts_count=0))
         self.assertTrue(is_eligible_user(user, date(2026, 1, 3)))
+
+    def test_parse_user_profile_skips_when_posts_exceed_limit(self) -> None:
+        class FakePage:
+            async def evaluate(self, *args, **kwargs):
+                return {"data": {"user": {"statuses_count": 500, "followers_count": 30}}}
+
+        profile = asyncio.run(parse_user_profile(
+            FakePage(),
+            "u",
+            "https://weibo.com/u/u",
+            max_posts_count=100,
+        ))
+        self.assertEqual(profile.posts_count, 500)
+        self.assertEqual(profile.followers_count, 30)
+        self.assertEqual(profile.registered_at, "")
 
     def test_database_deduplicates_and_exports(self) -> None:
         with TemporaryDirectory() as directory:
@@ -71,6 +99,34 @@ class RefactorPureTests(unittest.TestCase):
         self.assertTrue(posts[0].is_original)
         self.assertFalse(posts[1].is_original)
         self.assertEqual(posts[0].location, "上海")
+
+    def test_extract_post_parts_from_parent_url(self) -> None:
+        url = "https://weibo.com/6004281123/RkV8KuqpO"
+        self.assertEqual(extract_mblog_id(url), "RkV8KuqpO")
+        self.assertEqual(extract_post_owner_id(url), "6004281123")
+        self.assertEqual(extract_mblog_id("https://weibo.com/status/998877"), "998877")
+
+    def test_mblogid_to_numeric(self) -> None:
+        self.assertEqual(mblogid_to_numeric("RkV8KuqpO"), "5349862107251384")
+        self.assertEqual(mblogid_to_numeric("RkVS52M0H"), "5349890210661211")
+        self.assertEqual(mblogid_to_numeric("z0JH2lOMb"), "3501756485200075")
+        self.assertEqual(mblogid_to_numeric("998877"), "998877")
+        self.assertEqual(mblogid_to_numeric(""), "")
+
+    def test_parse_comment_payload_and_max_id(self) -> None:
+        payload = {
+            "data": [
+                {"user": {"id": 123, "screen_name": "张三"}},
+                {"user": {"id": 456, "name": "李四", "profile_url": "/u/456"}},
+            ],
+            "max_id": "98765",
+        }
+        refs = parse_comment_payload(payload, "parent")
+        self.assertEqual([ref.user_id for ref in refs], ["123", "456"])
+        self.assertEqual(refs[0].profile_url, "https://weibo.com/u/123")
+        self.assertEqual(refs[1].screen_name, "李四")
+        self.assertEqual(refs[1].profile_url, "https://weibo.com/u/456")
+        self.assertEqual(comment_payload_max_id(payload), "98765")
 
 
 if __name__ == "__main__":

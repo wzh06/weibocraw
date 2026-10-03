@@ -11,9 +11,22 @@ from .database import StateStore
 from .errors import CrawlStopped
 from .exporter import write_exports, write_report
 from .filters import is_eligible_user, parse_date
-from .models import AccountConfig, CrawlReport, ParentPostConfig, Settings
-from .parsers import parse_api_posts, parse_commenters, parse_post_cards, parse_user_profile
-from .selectors import COMMENT_USER_FALLBACK_SELECTORS, PROFILE_POSTS_ENDPOINT
+from .models import AccountConfig, CrawlReport, ParentPostConfig, Settings, UserRecord
+from .parsers import (
+    comment_payload_max_id,
+    extract_mblog_id,
+    extract_post_owner_id,
+    fetch_build_comments,
+    fetch_post_detail_id,
+    fetch_profile_counts,
+    mblogid_to_numeric,
+    parse_api_posts,
+    parse_comment_payload,
+    parse_commenters,
+    parse_post_cards,
+    parse_user_profile,
+)
+from .selectors import COMMENT_NEXT_SELECTORS, COMMENT_USER_FALLBACK_SELECTORS, PROFILE_POSTS_ENDPOINT
 
 try:
     from playwright.async_api import (
@@ -41,8 +54,7 @@ async def _close_context(context: Any) -> None:
 
 
 async def _next_page(page: Any) -> bool:
-    selectors = "a.next, a:has-text('下一页'), a:has-text('查看更多评论'), button:has-text('查看更多评论')"
-    button = page.locator(selectors).last
+    button = page.locator(COMMENT_NEXT_SELECTORS).last
     if await button.count() == 0:
         return False
     try:
@@ -84,11 +96,67 @@ async def _settle_profile_page(page: Any) -> None:
         await page.wait_for_timeout(1500)
 
 
-async def collect_parent_commenters(page: Any, parent: ParentPostConfig, state: StateStore, settings: Settings) -> int:
+async def _collect_parent_commenters_from_api(
+    page: Any,
+    parent: ParentPostConfig,
+    state: StateStore,
+    settings: Settings,
+    *,
+    numeric_id: str,
+    owner_id: str,
+) -> tuple[int, int, bool]:
+    """Collect commenters via ``buildComments``.
+
+    Returns ``(new_commenters, pages_completed, finished)``.  A transient API
+    failure after at least one successful page leaves ``finished`` false so the
+    checkpoint can be resumed on the next run instead of being discarded.
+    """
     checkpoint = state.get_parent_checkpoint(parent.parent_id)
-    await page.goto(parent.url, wait_until="domcontentloaded", timeout=settings.crawler.page_timeout_ms)
-    await detect_block_page(page)
-    await _settle_dynamic_page(page)
+    page_number = checkpoint.page_number
+    max_id = checkpoint.cursor or ""
+    total_new = 0
+    seen_pages = 0
+    while True:
+        payload = await fetch_build_comments(
+            page,
+            numeric_id=numeric_id,
+            owner_id=owner_id,
+            max_id=max_id,
+        )
+        if payload is None:
+            # Transient/blocked request: keep the last successful checkpoint
+            # and let the caller fall back or resume later.
+            break
+        refs = parse_comment_payload(payload, parent.parent_id)
+        if not refs:
+            # An empty first page means the API path is not usable here;
+            # otherwise it is simply the end of the comment stream.
+            if seen_pages == 0:
+                break
+            state.set_parent_checkpoint(parent.parent_id, page_number + seen_pages, "")
+            return total_new, seen_pages, True
+        for ref in refs:
+            total_new += int(state.upsert_commenter(ref))
+        seen_pages += 1
+        next_max_id = comment_payload_max_id(payload)
+        state.set_parent_checkpoint(parent.parent_id, page_number + seen_pages, next_max_id)
+        if settings.crawler.max_comment_pages and seen_pages >= settings.crawler.max_comment_pages:
+            return total_new, seen_pages, True
+        if not next_max_id or next_max_id == max_id:
+            return total_new, seen_pages, True
+        max_id = next_max_id
+        await asyncio.sleep(random.uniform(settings.crawler.min_delay_seconds, settings.crawler.max_delay_seconds))
+    return total_new, seen_pages, False
+
+
+async def _collect_parent_commenters_from_dom(
+    page: Any,
+    parent: ParentPostConfig,
+    state: StateStore,
+    settings: Settings,
+) -> tuple[int, bool]:
+    """Fallback DOM collection using the visible comment links."""
+    checkpoint = state.get_parent_checkpoint(parent.parent_id)
     page_number = checkpoint.page_number
     await _advance_to_page(page, page_number)
     total_new = 0
@@ -98,14 +166,55 @@ async def collect_parent_commenters(page: Any, parent: ParentPostConfig, state: 
         for ref in refs:
             total_new += int(state.upsert_commenter(ref))
         seen_pages += 1
-        state.set_parent_checkpoint(parent.parent_id, page_number + 1)
+        state.set_parent_checkpoint(parent.parent_id, page_number + seen_pages)
         if settings.crawler.max_comment_pages and seen_pages >= settings.crawler.max_comment_pages:
-            break
+            return total_new, True
         if not await _next_page(page):
-            break
+            return total_new, True
         page_number += 1
         await asyncio.sleep(random.uniform(settings.crawler.min_delay_seconds, settings.crawler.max_delay_seconds))
-    state.mark_parent_finished(parent.parent_id)
+
+
+async def collect_parent_commenters(page: Any, parent: ParentPostConfig, state: StateStore, settings: Settings) -> int:
+    await page.goto(parent.url, wait_until="domcontentloaded", timeout=settings.crawler.page_timeout_ms)
+    await detect_block_page(page)
+
+    total_new = 0
+    owner_id = extract_post_owner_id(parent.url)
+    mblog_id = extract_mblog_id(parent.url)
+    if owner_id and mblog_id:
+        numeric_id = await fetch_post_detail_id(page, mblog_id)
+        if not numeric_id and mblog_id.isdigit():
+            numeric_id = mblog_id
+        if not numeric_id:
+            numeric_id = mblogid_to_numeric(mblog_id)
+        if numeric_id:
+            api_total, api_pages, api_finished = await _collect_parent_commenters_from_api(
+                page,
+                parent,
+                state,
+                settings,
+                numeric_id=numeric_id,
+                owner_id=owner_id,
+            )
+            total_new += api_total
+            logging.debug(
+                "buildComments parent=%s users=%s pages=%s finished=%s",
+                parent.parent_id,
+                api_total,
+                api_pages,
+                api_finished,
+            )
+            if api_pages or api_finished:
+                if api_finished:
+                    state.mark_parent_finished(parent.parent_id)
+                return total_new
+
+    await _settle_dynamic_page(page)
+    dom_total, dom_finished = await _collect_parent_commenters_from_dom(page, parent, state, settings)
+    total_new += dom_total
+    if dom_finished:
+        state.mark_parent_finished(parent.parent_id)
     return total_new
 
 
@@ -115,8 +224,34 @@ async def collect_user_profile(page: Any, user_id: str, state: StateStore, setti
         return False
     await page.goto(user.profile_url, wait_until="domcontentloaded", timeout=settings.crawler.page_timeout_ms)
     await detect_block_page(page)
+    posts_count = followers_count = None
+    if settings.max_posts_count is not None and settings.max_posts_count > 0:
+        posts_count, followers_count = await fetch_profile_counts(page, user_id)
+        if posts_count is not None and posts_count > settings.max_posts_count:
+            logging.debug(
+                "skip profile user=%s posts_count=%s > max_posts_count=%s",
+                user_id,
+                posts_count,
+                settings.max_posts_count,
+            )
+            state.upsert_user(UserRecord(
+                user_id=user_id,
+                profile_url=user.profile_url,
+                posts_count=posts_count,
+                followers_count=followers_count,
+                profile_fetched_at=datetime.now(UTC).isoformat(timespec="seconds"),
+                profile_status="excluded",
+            ))
+            return False
     await _settle_profile_page(page)
-    profile = await parse_user_profile(page, user_id, user.profile_url)
+    profile = await parse_user_profile(
+        page,
+        user_id,
+        user.profile_url,
+        max_posts_count=settings.max_posts_count,
+        posts_count=posts_count,
+        followers_count=followers_count,
+    )
     eligibility_date = parse_date(settings.eligibility_as_of) or datetime.now(UTC).date()
     eligible = is_eligible_user(profile, eligibility_date, max_posts_count=settings.max_posts_count)
     logging.debug(

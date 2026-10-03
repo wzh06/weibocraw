@@ -97,11 +97,16 @@ class StateStore:
         self.conn.commit()
 
     def get_parent_checkpoint(self, parent_id: str) -> Checkpoint:
+        row = self.conn.execute(
+            "SELECT page_number, cursor, updated_at FROM checkpoints WHERE scope=?",
+            (f"parent:{parent_id}",),
+        ).fetchone()
+        if row:
+            return Checkpoint(f"parent:{parent_id}", row[1], int(row[0]), row[2])
         row = self.conn.execute("SELECT page_number, updated_at FROM parent_posts WHERE parent_id=?", (parent_id,)).fetchone()
         if row:
             return Checkpoint(parent_id, page_number=int(row[0]), updated_at=row[1])
-        row = self.conn.execute("SELECT page_number, cursor, updated_at FROM checkpoints WHERE scope=?", (f"parent:{parent_id}",)).fetchone()
-        return Checkpoint(f"parent:{parent_id}", row[1], int(row[0]), row[2]) if row else Checkpoint(f"parent:{parent_id}")
+        return Checkpoint(f"parent:{parent_id}")
 
     def set_parent_checkpoint(self, parent_id: str, page_number: int, cursor: str = "") -> None:
         now = utc_now()
